@@ -1,0 +1,73 @@
+lexeme	frequency	language	local_entropy	surprisal	perc_lessfreqtoken
+sulgima	278	Estonian			14/71
+kaikuma	995	Estonian			19/87
+soiguma	1148	Estonian			1/61
+kudema	2386	Estonian			0/160
+uhtuma	4005	Estonian			17/580
+pügama	4079	Estonian			1/47
+pürgima	6291	Estonian			24/113
+hauduma	7002	Estonian			188/476
+sulgema	54323	Estonian			26/461
+tapetseerima	126	Estonian	1.87700094	0.005086130812	
+žestikuleerima	296	Estonian	1.852155157	0.006040984419	
+blondeerima	759	Estonian	1.87700094	0.005086130812	
+rõkkama	1193	Estonian	2.027804175	2.235485037	
+protesteerima	3855	Estonian	1.831176402	0.006712491387	
+seedima	7266	Estonian	1.852155157	3.69826933	
+pettuma	10910	Estonian	2.142331021	4.239197558	
+kattuma	14207	Estonian	2.142331021	4.239197558	
+teenima	161139	Estonian	1.87700094	0.005086130812	
+staaritsema	106	Estonian			
+sõnelema	169	Estonian			
+lahutama	247	Estonian			
+hooplema	1128	Estonian			
+kriimustama	2277	Estonian			
+piiksuma	2584	Estonian			
+tilgutama	3552	Estonian			
+hautama	7427	Estonian			
+saatma	392642	Estonian			
+laikima	1408	Estonian			
+tšillima	1388	Estonian			
+bännima	1144	Estonian			
+šeerima	1032	Estonian			
+tšättima	549	Estonian			
+resettima	358	Estonian			
+stalkima	158	Estonian			
+seivima	93	Estonian			
+tšiitima	48	Estonian			
+revaloir	109	French	0.3457959941	0.4830074999	
+braire	292	French	0.4710974943	0.7089096432	
+surfaire	824	French	0.7331115763	1.468156871	
+discontinuer	1001	French	0.07978188281	0.07311698395	
+parfaire	4200	French	0.7344085561	0.3749417168	
+frire	5070	French	0.7050985363	1.064180338	
+douer	16807	French	0.4748320813	0.2892954134	
+clore	25835	French	0.05150787995	0.0250586548	
+faillir	730806	French	0.8796775658	1.255716554	
+appendre	115	French	4.525377	4.99995664	
+contrefaire	213	French	4.886021	9.77038	
+empoigner	312	French	3.704383	0.6972076	
+immiscer	314	French	4.768874	0.001956877	
+mordre	3254	French	4.525377	4.99995664	
+soucier	5429	French	3.467345	7.062496	
+fondre	10048	French	4.525377	4.99995664	
+prétendre	14931	French	4.402261	4.83209743	
+partir	336695	French	4.525377	5.847954	
+instiguer	113	French			
+coanimer	156	French			
+braconner	266	French			
+parader	1265	French			
+meubler	2074	French			
+polariser	2557	French			
+bronzer	3503	French			
+rougir	7520	French			
+attendre	381826	French			
+interviewer	1523	French			
+skipper	1561	French			
+switcher	589	French			
+checker	824	French			
+stalker	677	French			
+mailer	391	French			
+chiller	96	French			
+catcher	152	French			
+sharer	47	French			

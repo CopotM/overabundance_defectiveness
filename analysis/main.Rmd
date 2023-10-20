@@ -1,0 +1,435 @@
+---
+title: "Linguistic prescriptivism, defectiveness and overabundance in French and Estonian"
+output: html_document
+date: "2023-08-04"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+##Prepping the data
+Packages
+```{r}
+library(tidyverse)
+library(ggpirate)
+library(reshape2)
+library(corrplot)
+library(brms)
+```
+
+Importing the data
+
+```{r}
+read.pcibex <- function(filepath, auto.colnames=TRUE, fun.col=function(col,cols){cols[cols==col]<-paste(col,"Ibex",sep=".");return(cols)}) {
+  n.cols <- max(count.fields(filepath,sep=",",quote=NULL),na.rm=TRUE)
+  if (auto.colnames){
+    cols <- c()
+    con <- file(filepath, "r")
+    while ( TRUE ) {
+      line <- readLines(con, n = 1, warn=FALSE)
+      if ( length(line) == 0) {
+        break
+      }
+      m <- regmatches(line,regexec("^# (\\d+)\\. (.+)\\.$",line))[[1]]
+      if (length(m) == 3) {
+        index <- as.numeric(m[2])
+        value <- m[3]
+        if (is.function(fun.col)){
+         cols <- fun.col(value,cols)
+        }
+        cols[index] <- value
+        if (index == n.cols){
+          break
+        }
+      }
+    }
+    close(con)
+    return(read.csv(filepath, comment.char="#", header=FALSE, col.names=cols))
+  }
+  else{
+    return(read.csv(filepath, comment.char="#", header=FALSE, col.names=seq(1:n.cols)))
+  }
+}
+
+french <- read.pcibex("/Users/mariacopot/Desktop/git_repos/overabundance_defectiveness/analysis/results_def_oa_french.csv")
+estonian <- read.pcibex("/Users/mariacopot/Desktop/git_repos/overabundance_defectiveness/analysis/results_def_oa_estonian.csv")
+estonian <- estonian[estonian$PROLIFIC_PID != "PROLIFIC_PID",]
+
+```
+Extract item condition and language before merging the dataframes
+```{r}
+french$language <- "French"
+estonian$language <- "Estonian"
+
+french <- french %>% mutate(item_cond = case_when(
+  grepl("de", recording) ~ "defective",
+  grepl("an", recording) ~ "anglicism",
+  grepl("un", recording) ~ "uncertain",
+  grepl("ag", recording) ~ "ungrammatical",
+))
+
+estonian <- estonian %>% mutate(item_cond = case_when(
+  grepl("oa", recording) ~ "overabundant",
+  grepl("an", recording) ~ "anglicism",
+  grepl("ug", recording) ~ "ungrammatical",
+  grepl("uc", recording) ~ "uncertain",
+))
+
+results <- rbind(estonian, french)
+```
+Paste word corresponding to recording
+```{r}
+#items in the sentence frames
+items <- read.csv("/Users/mariacopot/Desktop/git_repos/overabundance_defectiveness/analysis/items.csv", sep = "\t")
+items$recording = paste(items$language, items$type, items$no, sep = "_")
+items$recording = paste0(items$recording, ".wav")
+
+results$lexeme <-  items$verb[match(results$recording, items$recording)]
+
+```
+Calculate prescriptiveness score. No one ever chose not to answer, so proceeding as such
+```{r}
+prs <- results %>% filter(Label == "lang_questions") %>%
+   filter(grepl("prescr",PennElementName))
+prs$Value <- as.numeric(prs$Value)
+ggplot(prs, aes(y = Value, x = PennElementName))+geom_violin()+facet_grid(~language)
+prs_wide.est <- prs %>%  filter(language == "Estonian") %>%
+  dcast(`MD5.hash.of.participant.s.IP.address`~ PennElementName, value.var = "Value") %>% select(-`MD5.hash.of.participant.s.IP.address`)
+prs_wide.fr <- prs %>%  filter(language == "French") %>%
+  dcast(`MD5.hash.of.participant.s.IP.address`~ PennElementName, value.var = "Value") %>% select(-`MD5.hash.of.participant.s.IP.address`)
+prs.rcorr.est <- cor(as.matrix(prs_wide.est))
+prs.rcorr.fr <- cor(as.matrix(prs_wide.fr))
+corrplot(prs.rcorr.est, order = "AOE")
+corrplot(prs.rcorr.fr, order = "AOE")
+
+#create holistic prescriptivism score
+prs_grouped_all <- prs %>% group_by(`MD5.hash.of.participant.s.IP.address`) %>% summarize(score = sum(Value))
+results$prescr_general <- with(results, prs_grouped_all$score[match(`MD5.hash.of.participant.s.IP.address`, prs_grouped_all$`MD5.hash.of.participant.s.IP.address`)])
+
+```
+Find if any participants had a particularly high rate of saying that they knew pseudolexemes, and exclude them.
+```{r}
+lex_check <- results[(results$PennElementName == "lex_checklist"),]
+lex_check$known <- ifelse(lex_check$Value == "checked", 0, 1)
+#there is orthographic variation between the PCIbex lexeme checklist file and the items file - fixing them before matching
+lexeme_stats <- read.csv("/Users/mariacopot/Desktop/git_repos/overabundance_defectiveness/analysis/lexeme_stats.tsv", sep = "\t")
+
+lex_check <- lex_check %>% 
+  mutate(Parameter = case_when(Parameter == "sheerima"~ "šeerima",
+                               Parameter == "chatima"~ "tšättima",
+                               Parameter == "cheatima" ~"tšiitima",
+                               Parameter == "chillima" ~"tšillima",
+                               .default = as.character(Parameter)))
+lex_check$is_real <- ifelse(lex_check$Parameter %in% lexeme_stats$lexeme, 1, 0)
+
+#percentage of pseudolexemes reported as known by participant
+
+participants_attention <- lex_check %>% group_by(MD5.hash.of.participant.s.IP.address) %>%
+  filter(is_real == 0) %>%
+  summarise(false_positives = sum(known)/36)
+
+summary(participants_attention$false_positives)
+#choice of threshold of 15% false positives based on distribution
+bad_participants <- participants_attention[participants_attention$false_positives > 0.15,]$MD5.hash.of.participant.s.IP.address
+
+results <- results %>% filter(!MD5.hash.of.participant.s.IP.address %in% bad_participants)
+```
+Add word frequency data
+```{r}
+#frequency, local entropy, surprisal for each lexeme
+
+lexeme_stats <- lexeme_stats %>% separate(perc_lessfreqtoken, c("freq_num", "freq_denom"), sep = "/")
+lexeme_stats <- lexeme_stats %>% mutate(
+  freq_num = as.numeric(freq_num),
+  freq_denom = as.numeric(freq_denom)
+)
+lexeme_stats$perc_lessfreqtoken <- lexeme_stats$freq_num/lexeme_stats$freq_denom
+
+results$freq <- lexeme_stats$frequency[match(results$lexeme, lexeme_stats$lexeme)]
+results$freq_num <- lexeme_stats$freq_num[match(results$lexeme, lexeme_stats$lexeme)]
+results$freq_denom <- lexeme_stats$freq_num[match(results$lexeme, lexeme_stats$lexeme)]
+results$perc_lessfreqtoken <- lexeme_stats$perc_lessfreqtoken[match(results$lexeme, lexeme_stats$lexeme)]
+```
+
+Demographic information
+```{r}
+demo <- results %>% filter(PennElementName == "demo_html")
+results$age <-  demo[demo$Parameter == "age",]$Value[match(results$MD5.hash.of.participant.s.IP.address, demo$MD5.hash.of.participant.s.IP.address)]
+results$educ <-  demo[grepl("dipl", demo$Parameter),]$Value[match(results$MD5.hash.of.participant.s.IP.address, demo$MD5.hash.of.participant.s.IP.address)]
+results$gender <-  demo[ demo$Parameter == "sex",]$Value[match(results$MD5.hash.of.participant.s.IP.address, demo$MD5.hash.of.participant.s.IP.address)]
+
+```
+
+Get df with only judgements
+```{r}
+judgs <- results %>% 
+  filter(PennElementName == "slider_judg") %>%
+  filter(grepl("wav", recording)) %>%
+  filter(Parameter == "Choice") %>%
+  mutate(Value = as.numeric(Value))
+```
+
+Remove items for which the participant doesn't know the lexeme
+```{r}
+
+lex_check$key <- paste(lex_check$`MD5.hash.of.participant.s.IP.address`, lex_check$Parameter, sep = "~") 
+judgs$key <- paste(judgs$`MD5.hash.of.participant.s.IP.address`, judgs$lexeme, sep = "~") 
+judgs$known <- with(judgs, lex_check$known[match(key,lex_check$key)])
+
+judgs <- judgs %>% filter(known == 1)
+```
+
+
+##Descriptive statistics
+
+Plot item, participant and language conditions
+```{r}
+
+ggplot(judgs, aes(y = Value, x = item_cond, color = item_cond)) + 
+  geom_jitter(alpha = 0.2, width = 0.3) + 
+  geom_violin(alpha = 0.5, scale = "width") +
+  facet_grid(partic_condition~language, scales = "free_x")
+```
+
+
+For uncertains and OA/DEF, look at the relationship with frequency
+```{r}
+judgs$logfreq <- log(judgs$freq)
+uncertains <- judgs %>% filter(item_cond %in% c("uncertain", "defective", "overabundant"))
+
+
+ggplot(judgs, aes(x = logfreq, y = Value, color = item_cond)) + geom_point(alpha = 0.5) + 
+  facet_grid(partic_condition~language, scales = "free_x") + geom_smooth(method = "lm")
+```
+
+And with prescriptivism score
+```{r}
+
+ggplot(judgs, aes(x = prescr_general, y = Value, color = item_cond)) + geom_point(alpha = 0.5) + 
+  facet_grid(partic_condition~language, scales = "free_x") + geom_smooth(method = "lm")
+````
+
+For estonian overabundants, check correlation between their score and their frequency
+* u-shaped distribution when ordered by the percentage of the less frequent token
+* same when ordered by numerator frequency
+*
+```{r}
+ggplot(judgs[judgs$item_cond == "overabundant",], aes(x = fct_reorder(lexeme, perc_lessfreqtoken), y = Value)) + 
+  geom_jitter(alpha = 0.2, width = 0.3) +
+  geom_violin(alpha = 0.5, scale = "width") +
+  geom_boxplot(width = 0.1) +
+  facet_wrap(~partic_condition, scales = "free_x", ncol = 1)
+````
+
+
+##Inferential statistics
+
+Coding the variables for a single model for all data
+```{r}
+#for modeling, we can think of defective and overabundant as the same item condition: uncertain items upon which the language's prescriptive culture has something explicit to say
+
+judgs_inf <- judgs %>% mutate(
+  language = as.factor(language),
+  Value = as.numeric(Value),
+  partic_condition= as.factor(partic_condition),
+  PROLIFIC_PID = as.character(PROLIFIC_PID),
+  prescr_general = prescr_general-9,
+  age = as.numeric(age),
+  educ = ordered(as.factor(educ),levels = c("no_dipl", "high_dipl","bach_dipl", "master_dipl" )),
+  logfreq = log(freq)
+)
+
+
+contrasts(judgs_inf$language) <- c(-0.5, 0.5)
+contrasts(judgs_inf$partic_condition) <- c(-0.5, 0.5)
+
+judgs_inf$item_cond <- as.character(judgs_inf$item_cond)
+%judgs_inf[judgs_inf$item_cond %in% c("defective", "overabundant"),]$item_cond <- "culture_targeted"
+judgs_inf$item_cond <- as.factor(judgs_inf$item_cond)
+judgs_inf$item_cond <- relevel(judgs_inf$item_cond, "ungrammatical")
+
+c<-contr.treatment(4)
+my.coding<-matrix(rep(1/4, 12), ncol=3)
+contrasts(judgs_inf$item_cond)<- c-my.coding
+
+judgs_inf <- judgs_inf %>% mutate(
+  prescr_general_sc = scale(prescr_general),
+  age_sc = scale(age),
+  logfreq_sc = scale(logfreq)
+)
+
+
+judgs_inf$Value = judgs_inf$Value/99
+````
+Model
+
+```{r}
+mod2 <- brm(Value ~ language*item_cond*partic_condition*logfreq_sc+(1|recording)+(1|PROLIFIC_PID), data = judgs_inf,
+            family = zero_one_inflated_beta(),
+            chains = 4,
+            cores = 4,
+            init = "0",
+            backend = "cmdstanr")
+
+save(mod2, file = "/Users/mariacopot/Desktop/model.RDS")
+
+conditions <- data.frame(expand.grid(partic_condition = c("normative", "possible"), language log_freq_std = c(-1.5, 0, 1.5) ))
+byfreq_plot <- plot(conditional_effects(mod_all, effects = "prescr_general_std:item_cond", conditions = conditions))[[1]]+
+  facet_grid(log_freq_std~partic_condition)+
+  ylab("Judgement score") + xlab("Prescriptiveness") +
+    scale_fill_discrete(name = "Item condition")+
+  scale_color_discrete(name = "Item condition")+
+  theme_minimal(15)
+byfreq_plot$facet$params$labeller <- as_labeller(
+  c(`-1.5` = "Low freq", `0` = "Mid freq", `1.5`= "High freq", `normative` = "Normative", `possible` = "Possible"))
+
+library(glmmTMB)
+judgs_inf$Value_glmm <- ifelse(judgs_inf$Value == "1", "0.999", 
+                               ifelse(judgs_inf$Value == "0", "0.001", judgs_inf$Value))
+
+judgs2 <- judgs_inf %>% select(language, item_cond, partic_condition, logfreq_sc, recording, Value_glmm, prescr_general_sc)
+judgs2$logfreq_sc <- judgs2$logfreq_sc[,1]
+judgs2$prescr_general_sc <- judgs2$prescr_general_sc[,1]
+judgs2$Value_glmm <- as.numeric(judgs2$Value_glmm)
+
+
+a <- glmmTMB(Value_glmm ~ language*item_cond*partic_condition*logfreq_sc+(1|recording), data = judgs2, family = beta_family())
+
+judgs2$predicted_a <-  predict(a,type = "response")
+ggplot(judgs2, aes(x = logfreq_sc, y = predicted_a, color = item_cond)) + geom_point(alpha = 0.2) + 
+  facet_grid(partic_condition~language, scales = "free_x") + geom_smooth(method = "glm")
+
+b <- glmmTMB(Value_glmm ~ language*item_cond*partic_condition*prescr_general_sc+(1|recording), data = judgs2, family = beta_family())
+judgs2$predicted_b <-  predict(b,type = "response")
+ggplot(judgs2, aes(x = prescr_general_sc, y = predicted_b, color = item_cond)) + geom_point(alpha = 0.2) + 
+  facet_grid(partic_condition~language, scales = "free_x") + geom_smooth(method = "glm")
+
+````
+
+Two different models, one per language
+
+```{r}
+
+judgs_inf <- judgs %>% mutate(
+  language = as.factor(language),
+  Value = as.numeric(Value),
+  partic_condition= as.factor(partic_condition),
+  PROLIFIC_PID = as.character(PROLIFIC_PID),
+  prescr_general = prescr_general-9,
+  age = as.numeric(age),
+  educ = ordered(as.factor(educ),levels = c("no_dipl", "high_dipl","bach_dipl", "master_dipl" )),
+  logfreq = log(freq)
+)
+
+contrasts(judgs_inf$partic_condition) <- c(-0.5, 0.5)
+
+judgs_inf$item_cond <- as.character(judgs_inf$item_cond)
+
+c<-contr.treatment(4)
+my.coding<-matrix(rep(1/4, 12), ncol=3)
+
+judgs_inf$Value = judgs_inf$Value/99
+
+
+est <- judgs_inf %>% filter(language == "Estonian")
+est$item_cond <- as.factor(est$item_cond)
+est$item_cond <- relevel(est$item_cond, "ungrammatical")
+contrasts(est$item_cond)<- c-my.coding
+est <- est %>% mutate(
+  prescr_general_sc = scale(prescr_general),
+  age_sc = scale(age),
+  logfreq_sc = scale(logfreq)
+)
+
+fr <- judgs_inf %>% filter(language == "French")
+fr$item_cond <- as.factor(fr$item_cond)
+fr$item_cond <- relevel(fr$item_cond, "ungrammatical")
+contrasts(fr$item_cond)<- c-my.coding
+fr <- fr %>% mutate(
+  prescr_general_sc = scale(prescr_general),
+  age_sc = scale(age),
+  logfreq_sc = scale(logfreq)
+)
+
+est_mod <- brm(Value ~ prescr_general_sc*item_cond*partic_condition*logfreq_sc+(1|recording)+(1|PROLIFIC_PID), data = est,
+            family = zero_one_inflated_beta(),
+            chains = 4,
+            cores = 4,
+            init = "0",
+            backend = "cmdstanr")
+
+save(est_mod, file = "/Users/mariacopot/Desktop/model_est.RDS")
+
+fr_mod <- brm(Value ~ prescr_general_sc*item_cond*partic_condition*logfreq_sc+(1|recording)+(1|PROLIFIC_PID), data = fr,
+            family = zero_one_inflated_beta(),
+            chains = 4,
+            cores = 4,
+            init = "0",
+            backend = "cmdstanr")
+
+save(fr_mod, file = "/Users/mariacopot/Desktop/model_fr.RDS")
+````
+
+Plots for estonian
+
+```{r}
+
+#by frequency - all factors
+conditions <- data.frame(expand.grid(partic_condition = c("normative", "possible"), logfreq_sc= c(-1.5, 0, 1.5) ))
+byfreq_plot <- plot(conditional_effects(est_mod, effects = "prescr_general_sc:item_cond", conditions = conditions))[[1]]+
+  facet_grid(logfreq_sc~partic_condition)+
+  ylab("Judgement score") + xlab("Prescriptiveness") +
+    scale_fill_discrete(name = "Item condition")+
+  scale_color_discrete(name = "Item condition")+
+  theme_minimal(15)
+byfreq_plot$facet$params$labeller <- as_labeller(
+  c(`-1.5` = "Low freq", `0` = "Mid freq", `1.5`= "High freq", `normative` = "Normative", `possible` = "Possible"))
+
+byfreq_plot
+
+#by prescriptiveness - all factors
+conditions <- data.frame(expand.grid(partic_condition = c("normative", "possible"), prescr_general_sc= c(-2, 0, 2) ))
+byprescr_plot <- plot(conditional_effects(est_mod, effects = "logfreq_sc:item_cond", conditions = conditions))[[1]]+
+  facet_grid(prescr_general_sc~partic_condition)+
+  ylab("Judgement score") + xlab("Prescriptivism") +
+    scale_fill_discrete(name = "Item condition")+
+  scale_color_discrete(name = "Item condition")+
+  theme_minimal(15)
+byprescr_plot$facet$params$labeller <- as_labeller(
+  c(`-2` = "Low prescr", `0` = "Mid prescr", `2`= "High prescr", `normative` = "Normative", `possible` = "Possible"))
+
+byprescr_plot
+````
+Plots for French
+
+```{r}
+
+
+#by frequency - all factors
+conditions <- data.frame(expand.grid(partic_condition = c("normative", "possible"), logfreq_sc= c(-1.5, 0, 1.5) ))
+byfreq_plot <- plot(conditional_effects(fr_mod, effects = "prescr_general_sc:item_cond", conditions = conditions))[[1]]+
+  facet_grid(logfreq_sc~partic_condition)+
+  ylab("Judgement score") + xlab("Prescriptiveness") +
+    scale_fill_discrete(name = "Item condition")+
+  scale_color_discrete(name = "Item condition")+
+  theme_minimal(15)
+byfreq_plot$facet$params$labeller <- as_labeller(
+  c(`-1.5` = "Low freq", `0` = "Mid freq", `1.5`= "High freq", `normative` = "Normative", `possible` = "Possible"))
+
+byfreq_plot
+
+#by prescriptiveness - all factors
+conditions <- data.frame(expand.grid(partic_condition = c("normative", "possible"), prescr_general_sc= c(-2, 0, 2) ))
+byprescr_plot <- plot(conditional_effects(fr_mod, effects = "logfreq_sc:item_cond", conditions = conditions))[[1]]+
+  facet_grid(prescr_general_sc~partic_condition)+
+  ylab("Judgement score") + xlab("Prescriptivism") +
+    scale_fill_discrete(name = "Item condition")+
+  scale_color_discrete(name = "Item condition")+
+  theme_minimal(15)
+byprescr_plot$facet$params$labeller <- as_labeller(
+  c(`-2` = "Low prescr", `0` = "Mid prescr", `2`= "High prescr", `normative` = "Normative", `possible` = "Possible"))
+
+byprescr_plot
+`````
+
